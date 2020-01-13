@@ -417,7 +417,7 @@ HmapResult hmPut(Hmap* map, const uint32_t key, const int value) {
     map->count++;
 
     /* if we have hit a / the limit, start growing */
-    if((map->toMigrate == 0) && (current->maxOffset == current->offsetLimit || map->count == map->growSize)) {
+    if((map->toMigrate == 0) && (current->maxOffset == current->offsetLimit || map->count >= map->growSize)) {
 	triggerResize(map, HMAP_GROW);
     }
 
