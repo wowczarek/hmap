@@ -50,3 +50,10 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# Binaries
+hmap_test
+hmap_example
+
+# scrap
+.scrap
