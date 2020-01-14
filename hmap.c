@@ -29,11 +29,13 @@
  * @file   hmap.c
  * @date   Fri Jan 10 23:27:00 2020
  *
- * @brief  a simple hash map:
- *                            - linear probing, power of 2 size, uint32_t keys
- *                            - Robin Hood with backwards shift, no tombstones,
- *                            - Dynamic resizing (full migration or in batches)
+ * @brief  implementation of a simple hash map:
  *
+ *                            - linear probing, power of 2 size, uint32_t keys
+ *                            - Robin Hood with backwards shift, no tombstones
+ *                            - Dynamic resizing (full migration or in batches)
+ *                            - Search probe length limited to actual maximum
+ *                            - Configurable load factors, minimum size, batch size
  */
 
 #include <stdio.h>
@@ -45,6 +47,7 @@
 
 #include "hmap.h"
 
+/* Fibonacci mapping bases */
 #define FIB32_BASE 2654435769               /* 2^32 / phi */
 #define FIB64_BASE 11400714819323198485llu  /* 2^64 / phi */
 
@@ -53,12 +56,17 @@
 #define HMAP_DEF_LOG2SIZE        5
 #define HMAP_DEF_GROW_LOAD       0.7
 #define HMAP_DEF_SHRINK_LOAD     0.25
-#define HMAP_DEF_BATCHSIZE       4
+#define HMAP_MIN_BATCHSIZE       4
 #define HMAP_DEF_MAX_OFFSET_MULT 1
 
 /* only a helper for bit shifts for if/when this is implemented for 64-bit keys */
 #define HMAP_MAX_BITS 32
 
+/* convenience constants for triggerResize */
+#define HMAP_GROW 1
+#define HMAP_SHRINK -1
+
+/* the shit */
 static inline uint32_t roundPow2_32(uint32_t n);
 static inline uint32_t log2_32(uint32_t n);
 static inline uint32_t hindex32(const uint32_t key, const uint32_t shift, const uint32_t mask);
@@ -69,8 +77,7 @@ static void hsInit(Hmap* map, HmapSpace* space, const uint32_t log2size);
 static void hsMigrate(Hmap* map, uint32_t batchSize);
 static void triggerResize(Hmap* map, const int dir);
 
-
-/* round n to power of 2 */
+/* round n to power of 2, recipe off the internets (Sean Eron Anderson's Bit Twiddling Hacks) */
 static inline uint32_t roundPow2_32(uint32_t n) {
 
     n--;
@@ -85,6 +92,7 @@ static inline uint32_t roundPow2_32(uint32_t n) {
 
 }
 
+/* DeBrujin sequence for bit positions */
 static const int _db32[32] = {
     0, 9, 1, 10, 13, 21, 2, 29,
     11, 14, 16, 18, 22, 25, 3, 30,
@@ -92,7 +100,7 @@ static const int _db32[32] = {
     19, 27, 23, 6, 26, 5, 4,31
 };
 
-/* log2 in 32 bits */
+/* log2 in 32 bits also from Bit Twiddling Hacks */
 static inline uint32_t log2_32(uint32_t n) {
 
     n |= n >> 1;
@@ -108,14 +116,22 @@ static inline uint32_t log2_32(uint32_t n) {
 /*
  * Return the key index for a map of given bit width / mask: Fibonacci index with some XOR mixing.
  * As per definition this is a "hash function", just used for uint32_t keys... It's a mapping function.
- * The keys themselves could / would be hashes of another data type (e.g. string),
+ * The keys themselves could / would / should be hashes of another data type (e.g. string),
  * computed using some hash function like XXHash, murmur, FNV, etc...
+ *
+ * Fibonacci hashing / indexing ripped from Malte Skarupke (probablydance.com):
+ * https://probablydance.com/2018/06/16/fibonacci-hashing-the-optimization-that-the-world-forgot-or-a-better-alternative-to-integer-modulo/
  *
  */
 static inline uint32_t hindex32(const uint32_t key, const uint32_t shift, const uint32_t mask) {
-//    return ((uint32_t)(key * FIB32_BASE) >> shift);
-    return (uint32_t)((key ^ (key >> shift)) * FIB32_BASE) >> shift;
-//	return key & mask;
+#if 0
+    return ((uint32_t)(key * FIB32_BASE) >> shift); /* basic Fibonacci index */
+#elif 1
+printf("yo\n");
+    return (uint32_t)((key ^ (key >> shift)) * FIB32_BASE) >> shift; /* Fibonacci index with XOR mixing */
+#elif 0
+	return key & mask; /* totally basic modulo (also why we need the mask) */
+#endif /* 0 */
 }
 
 /* insert a key + value into a hash map space */
@@ -123,8 +139,8 @@ static HmapResult hsInsert(HmapSpace* space, const uint32_t key, const int value
 
     HmapResult ret = { NULL, false };
     uint32_t index = hindex32(key, space->shift, space->mask);
-    bool placed = false; /* have we found a home for the new entry yet? */
-    uint32_t myindex = index; /* slot where we actually placed our new entry! */
+    bool placed = false;	/* have we found a home for the new entry yet? */
+    uint32_t myindex = index;	/* slot where we _actually_ placed our new entry! */
     HmapEntry me = { .key = key, .value = value, .offset = 0, .inuse = true };
     HmapEntry tmp;
     HmapEntry* buckets = space->buckets;
@@ -146,6 +162,7 @@ static HmapResult hsInsert(HmapSpace* space, const uint32_t key, const int value
 
 	/* this is all there is to Robin Hood on insert */
 	if(buckets[index].offset < me.offset) {
+	    /* minus this, which is only to return the inserted bucket */
 	    if(!placed) {
 		myindex = index;
 		placed = true;
@@ -161,11 +178,12 @@ static HmapResult hsInsert(HmapSpace* space, const uint32_t key, const int value
 
     }
 
-    /* keep the running max offset */
+    /* keep the running max offset, which will limit searches */
     if(me.offset > space->maxOffset) {
 	space->maxOffset = me.offset;
     }
 
+    /* no rich buckets encountered */
     if(!placed) {
 	myindex = index;
     }
@@ -192,6 +210,7 @@ static inline HmapEntry* hsFetch(HmapSpace* space, const uint32_t key, const uin
     }
 
     /* do not stop on an unused entry because we delete without backwards shift during migration */
+    /* TODO: investigate proper delete on migration and how this will affect fetches durinf migration */
     while(offset <= offsetLimit) {
 	if(buckets[index].inuse && buckets[index].key == key) {
 	    return &buckets[index];
@@ -215,15 +234,17 @@ static bool hsRemove(HmapSpace* space, const uint32_t key) {
     HmapEntry* buckets = space->buckets;
     uint32_t offset = 0;
 
-    /* find the entry and empty it */
+    /* find the entry and empty it: note this will not work in the lazy-emptied secondary space, but it's never used on it, yet */
     while(offset < space->offsetLimit && buckets[index].inuse) {
 
+	/* keep the index of the previous entry (that gets emptied) */
 	previndex = index;
 
 	index++;
 	index &= space->mask;
 	offset++;
 
+	/* we've found our key, let's empty it */
 	if(buckets[previndex].key == key) {
 	    buckets[previndex] = emptyentry;
 	    goto found;
@@ -236,7 +257,7 @@ static bool hsRemove(HmapSpace* space, const uint32_t key) {
 
 found:
 
-    /* keep shifting consecutive entries left until we find an empty or offset 0 (righteous ruler) */
+    /* keep shifting consecutive entries left until we find an empty or offset 0 (Righteous Ruler a.k.a. JAH) */
     while(buckets[index].offset > 0 && buckets[index].inuse) {
 	buckets[previndex] = buckets[index];
 	buckets[previndex].offset--;
@@ -255,6 +276,7 @@ static void hsInit(Hmap* map, HmapSpace* space, const uint32_t log2size) {
 
     uint32_t newsize = log2size;
 
+    /* don't shrink below minimum */
     if(newsize < map->minSize) {
 	newsize = map->minSize;
     }
@@ -265,12 +287,14 @@ static void hsInit(Hmap* map, HmapSpace* space, const uint32_t log2size) {
     space->shift = HMAP_MAX_BITS - newsize;
     space->offsetLimit = map->offsetMult * newsize;
     space->maxOffset = 0;
-    map->shrinkSize = space->size * map->shrinkLoad;
-    map->growSize = space->size * map->growLoad;
+
+    /* establish shrink and grow watermarks - saves a floating point multiplication on every insert and delete */
+    map->shrinkCount = space->size * map->shrinkLoad;
+    map->growCount = space->size * map->growLoad;
 
     /* this way we will ALWAYS grow before the map is completely full */
-    if(map->growSize >= space->mask) {
-	map->growSize = space->mask - 1;
+    if(map->growCount > space->mask) {
+	map->growCount = space->mask;
     }
 
     space->buckets = NULL;
@@ -287,29 +311,29 @@ static void hsMigrate(Hmap* map, const uint32_t batchSize) {
     HmapSpace* current = &map->spaces[map->current];
     HmapSpace* other = &map->spaces[!map->current];
 
+    /* keep migrating until nothing left or we've done our batch */
+    /* TODO: investigate limiting migration to (occupied) item count, not slot count, may shave off some time */
     while((left > 0) && (migrated < batchSize)) {
 	HmapEntry *entry = &other->buckets[pos];
 	if(entry->inuse) {
-	    /* properly insert the entry to current (new) space */
+	    /* properly insert the entry into current (new) space */
 	    hsInsert(current, entry->key, entry->value);
 	    /* lazy-delete the entry in old space */
 	    entry->inuse = false;
-	//    entry->key = 0;
-	//    entry->value = 0;
-	//    entry->offset = 0;
 	}
 	pos++;
 	migrated++;
 	left--;
     }
 
-    /* migration complete: we can free the secondary space */
+    /* migration complete: we can free up the secondary space */
     if(left == 0) {
 	map->migrateDir = 0;
 	map->toMigrate = 0;
 	map->migratePos = 0;
 	free(other->buckets);
 	other->buckets = NULL;
+    /* otherwise only update migration state */
     } else {
 	map->toMigrate = left;
 	map->migratePos = pos;
@@ -317,7 +341,7 @@ static void hsMigrate(Hmap* map, const uint32_t batchSize) {
 
 }
 
-/* grow or shrink the hash map and begin migration */
+/* start a resize of the hash map to begin migration, dir 1 = grow, -1 = shrink */
 static void triggerResize(Hmap* map, const int dir) {
 
     uint8_t current = map->current;
@@ -332,8 +356,15 @@ static void triggerResize(Hmap* map, const int dir) {
 	map->migrateDir = dir;
 	map->toMigrate = space->size;
 	map->migratePos = 0;
-    /* special case: empty map, we take up no space */
+    /* special case: empty map, we free up all space */
     } else {
+
+	/*
+	 * ...yes, the map will cycle through calloc/free if we continue adding and removing one item,
+	 * but does one really need a hash map if one is to store one item only?
+	 * [ note that no resize is triggered if we are at minSize, so this won't happen unless minsize is 1 ]
+	 */
+
 	if(map->spaces[0].buckets != NULL) {
 	    free(map->spaces[0].buckets);
 	    map->spaces[0].buckets = NULL;
@@ -342,18 +373,20 @@ static void triggerResize(Hmap* map, const int dir) {
 	    free(map->spaces[1].buckets);
 	    map->spaces[1].buckets = NULL;
 	}
+	/* init from minimum size */
+	newsize = map->minSize;
     }
 
-    /* flip to other space */
+    /* flip spaces around */
     current = !current;
     map->current = current;
     space = &map->spaces[current];
 
-    /* initialise other space */
+    /* initialise other (new current) (current current??) space */
     hsInit(map, space, newsize);
 
-    /* migrate all at once if we need to */
-    if(map->batchSize == HMAP_MIGRATE_ALL) {
+    /* migrate all at once if we need to, classic hash table */
+    if(map->batchSize == HMAP_MIGRATE_ALL && map->count > 0) {
 	hsMigrate(map, map->toMigrate);
     }
 
@@ -364,12 +397,14 @@ HmapResult hmGet(Hmap* map, const uint32_t key) {
 
     HmapResult ret = { NULL, true };
 
+    /* TODO: investigate fetch from secondary space first if migrated less than half */
+
     /* fetch from primary space */
     ret.entry = hsFetch(&map->spaces[map->current], key, map->spaces[map->current].maxOffset);
 
-    /* not found and stil migrating - see if it's in the secondary space */
+    /* not found and stil migrating: see if it's in the secondary space */
     if(ret.entry == NULL && map->toMigrate) {
-	ret.entry = hsFetch(&map->spaces[!map->current], key, map->spaces[!map->current].mask);
+	ret.entry = hsFetch(&map->spaces[!map->current], key, map->spaces[!map->current].maxOffset);
     }
 
     if(ret.entry == NULL) {
@@ -407,17 +442,18 @@ HmapResult hmPut(Hmap* map, const uint32_t key, const int value) {
 
     }
 
-    /* insert into current space */
+    /* insert (only) into current space */
     ret = hsInsert(current, key, value);
 
+    /* key exists, evac */
     if(ret.exists) {
 	return ret;
     }
 
     map->count++;
 
-    /* if we have hit a / the limit, start growing */
-    if((map->toMigrate == 0) && (current->maxOffset == current->offsetLimit || map->count >= map->growSize)) {
+    /* if we have hit a / the limit, start growing, but not when already migrating */
+    if((map->toMigrate == 0) && (current->maxOffset == current->offsetLimit || map->count >= map->growCount)) {
 	triggerResize(map, HMAP_GROW);
     }
 
@@ -435,6 +471,7 @@ bool hmRemove(Hmap* map, const uint32_t key) {
     if(map->toMigrate) {
 
 	/* try removing from previous space first */
+	/* TODO: this is inconsistent, we should lazy-remove the existing item since this is what we do on migration */
 	if(hsRemove(other,key)) {
 	    map->count--;
 	    /* continue with migration */
@@ -446,20 +483,22 @@ bool hmRemove(Hmap* map, const uint32_t key) {
 
     }
 
+    /* properly remove from current space */
     if(hsRemove(current,key)) {
 	map->count--;
-	/* trigger resize if we have hit the/a limit */
-	if(map->toMigrate == 0 && map->count <= map->shrinkSize && current->log2size > HMAP_MIN_LOG2SIZE) {
+	/* trigger resize if we have hit the/a limit and not already migrating, do not shrink below minimum size */
+	if(map->toMigrate == 0 && map->count <= map->shrinkCount && current->log2size > map->minSize) {
 	    triggerResize(map, HMAP_SHRINK);
 	}
 	return true;
     }
 
+    /* nope */
     return false;
 
 }
 
-/* free hash map */
+/* free a hash map */
 void hmFree(Hmap* map) {
 
     if(map != NULL) {
@@ -480,9 +519,10 @@ void hmFree(Hmap* map) {
 Hmap* hmInitCustom(Hmap* map, const uint32_t minsize_log2, const double growLoad, const double shrinkLoad,
                    const uint32_t offsetLimitMult, const uint32_t batchSize) {
 
+    /* good boi! */
     memset(map, 0, sizeof(Hmap));
 
-    /* keep the sizes sane */
+    /* keep the size sane */
     map->minSize = minsize_log2;
     if(map->minSize < HMAP_MIN_LOG2SIZE) {
 	map->minSize = HMAP_MIN_LOG2SIZE;
@@ -495,20 +535,33 @@ Hmap* hmInitCustom(Hmap* map, const uint32_t minsize_log2, const double growLoad
     map->shrinkLoad = shrinkLoad;
     map->offsetMult = offsetLimitMult;
 
-    /* make sure we will have migrated in time */
-    map->batchSize = batchSize;
-    if(batchSize != HMAP_MIGRATE_ALL && batchSize < (growLoad / shrinkLoad)) {
-	map->batchSize = (growLoad / shrinkLoad) + 1;
-    }
-
+    /* sanitise load factors */
     if(map->growLoad <= 0.0 || map->growLoad >= 1.0) {
 	map->growLoad = HMAP_DEF_GROW_LOAD;
     }
     if(map->shrinkLoad <= 0.0 || map->shrinkLoad >= 1.0) {
-	map->growLoad = HMAP_DEF_SHRINK_LOAD;
+	map->shrinkLoad = HMAP_DEF_SHRINK_LOAD;
     }
 
-    /* for those  who think NULL != 0 */
+    /* keep shrink load at at least 0.5 * grow load */
+    if(map->shrinkLoad > (map->growLoad / 2.0) {
+	map->shrinkLoad = map->growLoad / 2.0);
+    }
+
+    /* sanitise batch size */
+    map->batchSize = batchSize;
+    if(batchSize != HMAP_MIGRATE_ALL) {
+	/* make sure we will have migrated in time */
+	if(batchSize < (growLoad / shrinkLoad + 1.0)) {
+	    map->batchSize = (growLoad / shrinkLoad) + 1.0;
+	}
+	/* ...and enforce minimum */
+	if(map->batchSize < HMAP_MIN_BATCHSIZE) {
+	    map->batchSize = HMAP_MIN_BATCHSIZE;
+	}
+    }
+
+    /* ...NULL != 0? Just in case... */
     map->spaces[0].buckets = NULL;
     map->spaces[1].buckets = NULL;
 
@@ -532,17 +585,17 @@ Hmap* hmInitSize(Hmap* map, const uint32_t minsize) {
 	log2size++;
     }
 
-    return hmInitCustom(map, log2size, HMAP_DEF_GROW_LOAD, HMAP_DEF_SHRINK_LOAD, HMAP_DEF_MAX_OFFSET_MULT, HMAP_DEF_BATCHSIZE);
+    return hmInitCustom(map, log2size, HMAP_DEF_GROW_LOAD, HMAP_DEF_SHRINK_LOAD, HMAP_DEF_MAX_OFFSET_MULT, HMAP_MIN_BATCHSIZE);
 }
 
 /* init a hash map with specified minimum size in log2 */
 Hmap* hmInitLog2Size(Hmap* map, const uint32_t log2size) {
-    return hmInitCustom(map, log2size, HMAP_DEF_GROW_LOAD, HMAP_DEF_SHRINK_LOAD, HMAP_DEF_MAX_OFFSET_MULT, HMAP_DEF_BATCHSIZE);
+    return hmInitCustom(map, log2size, HMAP_DEF_GROW_LOAD, HMAP_DEF_SHRINK_LOAD, HMAP_DEF_MAX_OFFSET_MULT, HMAP_MIN_BATCHSIZE);
 }
 
 /* init a hash map with defaults */
 Hmap* hmInit(Hmap* map) {
-    return hmInitCustom(map, HMAP_DEF_LOG2SIZE, HMAP_DEF_GROW_LOAD, HMAP_DEF_SHRINK_LOAD, HMAP_DEF_MAX_OFFSET_MULT, HMAP_DEF_BATCHSIZE);
+    return hmInitCustom(map, HMAP_DEF_LOG2SIZE, HMAP_DEF_GROW_LOAD, HMAP_DEF_SHRINK_LOAD, HMAP_DEF_MAX_OFFSET_MULT, HMAP_MIN_BATCHSIZE);
 }
 
 /* dump the contents of a hash map to stdout */

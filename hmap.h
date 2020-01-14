@@ -29,7 +29,13 @@
  * @file   hmap.h
  * @date   Fri Jan 10 23:27:00 2020
  *
- * @brief  hash map type and function declarations
+ * @brief  type and function declarations for a simple hash map:
+ *
+ *                            - linear probing, power of 2 size, uint32_t keys
+ *                            - Robin Hood with backwards shift, no tombstones
+ *                            - Dynamic resizing (full migration or in batches)
+ *                            - Search probe length limited to actual maximum
+ *                            - Configurable load factors, minimum size, batch size
  *
  */
 
@@ -39,52 +45,50 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* constants */
-#define HMAP_GROW 1
-#define HMAP_SHRINK -1
-#define HMAP_MIGRATE_ALL 0
-#define HMAP_NONE 0
+/* convenience constants */
+#define HMAP_MIGRATE_ALL 0	/* when set as batchSize on init, map migrates / rehashes everything on shring/grow */
+#define HMAP_NONE 0		/* universal zero constant */
 
 /* a single hash map entry */
 typedef struct {
-    uint32_t key;
-    uint32_t offset;
-    int value;
-    bool inuse;
+    uint32_t key;		/* 32-bit key */
+    uint32_t offset;		/* offset from ideal position = DIB = PL etc. */
+    int value;			/* value, whatever */
+    bool inuse;			/* slot is in use */
 } HmapEntry;
 
-/* a hash map space */
+/* a hash map space, the map has two - primary and secondary, used for growing and shrinking */
 typedef struct {
-    HmapEntry* buckets;
-    uint32_t mask;
-    uint32_t log2size;
-    uint32_t shift;
-    uint32_t size;
-    uint32_t offsetLimit;
-    uint32_t maxOffset;
+    HmapEntry* buckets;		/* pointer to bucket memory */
+    uint32_t mask;		/* mask, for faster index computation (size -1) */
+    uint32_t log2size;		/* size, log2 */
+    uint32_t shift;		/* shift, for faster index computation (key size - log2size) */
+    uint32_t size;		/* max slot count = 1 << log2size */
+    uint32_t offsetLimit;	/* offset = DIB = probe length limit for this space */
+    uint32_t maxOffset;		/* maximum offset = DIB = probe length encountered during inserts, limits fetches */
 } HmapSpace;
 
 /* hash map */
 typedef struct {
-    HmapSpace spaces[2];
-    uint32_t count;
-    uint32_t minSize;
-    uint32_t growSize;
-    uint32_t shrinkSize;
-    uint32_t toMigrate;
-    uint32_t migratePos;
-    uint32_t offsetMult;
-    uint32_t batchSize;
-    int migrateDir;
-    double growLoad;
-    double shrinkLoad;
-    uint8_t current;
+    HmapSpace spaces[2];	/* data space */
+    uint32_t count;		/* current item count */
+    uint32_t minSize;		/* minimum size, log2 */
+    uint32_t growCount;		/* item count at which we grow the map, based on [current space size] * growLoad */
+    uint32_t shrinkCount;	/* item count at which we shrink the map, based on [current space size] * shrinkLoad */
+    uint32_t toMigrate;		/* how many slots (not items) we still have to migrate */
+    uint32_t migratePos;	/* current position in migrating the previous space */
+    uint32_t offsetMult;	/* maximum offset multiplier where we grow (n * space->log2size) */
+    uint32_t batchSize;		/* migrate n slots per insert/delete */
+    int migrateDir;		/* direction of migration (TODO: experiment with realloc, then migrate left-right on grow, right-left on shrink) */
+    double growLoad;		/* load factor to grow the map */
+    double shrinkLoad;		/* load factor to shrink the map */
+    uint8_t current;		/* current space indicator, flips 0/1 as spaces are swapped around */
 } Hmap;
 
 /* result of inserts and retrievals */
 typedef struct {
-    HmapEntry *entry;
-    bool exists;
+    HmapEntry *entry;		/* pointer to bucket, NULL on fetch when key not found */
+    bool exists;		/* on insert: true = already exists and entry points to existing entry, on fetch: false if item not found */
 } HmapResult;
 
 /* init a hash map with custom parameters */
@@ -107,15 +111,15 @@ void hmFree(Hmap* map);
 bool hmRemove(Hmap* map, const uint32_t key);
 
 /*
- * put an entry into map, result has pointer to insered entry and found = false,
- * or pointer to existing entry and found = true if key is already in the map
+ * put an entry into map, result has pointer to insered entry and exists = false,
+ * or pointer to existing entry and exists = true if key is already in the map
  */
 HmapResult hmPut(Hmap* map, const uint32_t key, const int value);
 
-/* get entry from map, result has pointer to the entry and a 'found' bool */
+/* get entry from map, result has pointer to the entry and an 'exists' bool */
 HmapResult hmGet(Hmap* map, const uint32_t key);
 
-/* dump the contents of a hash map to stdout */
+/* dump the contents of a hash map to stdout, dump empty slots if empties == true */
 void hmDump(Hmap* map, const bool empties);
 
 #endif /* HMAP_H_ */

@@ -1,20 +1,54 @@
 CC=gcc
-CFLAGS+=-std=c99 -Wall -I. -O3 -lrt
+CFLAGS+=-std=c99 -Wall -I. -O3
+LIBNAME = libhmap.a
 
-DEPS = xalloc.h hmap.h duration.h
+LIBDEPS = duration.h xalloc.h hmap.h
+LIBOBJ = hmap.o
+
 OBJ1 = hmap.o hmap_test.o
 OBJ2 = hmap.o hmap_example.o
+OBJ1_DEPLIBS = -lrt
+OBJ2_DEPLIBS =
 
-%.o: %.c $(DEPS)
+%.o: %.c $(LIBDEPS)
 	$(CC) -c -o $@ $< $(CFLAGS)
-all: hmap_test hmap_example
 
-hmap_test: $(OBJ1)
-	$(CC) -o $@ $^ $(CFLAGS)
-hmap_example: $(OBJ2)
-	$(CC) -o $@ $^ $(CFLAGS)
+all: $(LIBNAME) hmap_test hmap_example
+
+$(LIBNAME): $(LIBOBJ)
+	ar rc $@ $^
+	ranlib $@
+
+hmap_test: $(OBJ1) $(LIBNAME)
+	$(CC) -o $@ $^ $(OBJ1_DEPLIBS) $(CFLAGS)
+
+hmap_example: $(OBJ2) $(LIBNAME)
+	$(CC) -o $@ $^ $(OBJ2_DEPLIBS) $(CFLAGS)
+
+.PHONY: fast
+fast:
+	$(MAKE) -j8 $(LIBNAME)
+	$(MAKE) -j8 all
 
 .PHONY: clean
-
 clean:
-	rm -rf *.o *~ core hmap_test hmap_example
+	rm -rf *.o *~ core hmap_test hmap_example $(LIBNAME)
+
+remake: clean all
+
+refast: clean fast
+
+colldebug: CFLAGS += -DCOLL_DEBUG
+colldebug: all
+
+recolldebug: CFLAGS += -DCOLL_DEBUG
+recolldebug: clean all
+
+prof: CFLAGS += -pg
+prof: all
+
+debug: CFLAGS += -g
+debug: all
+
+redebug: CFLAGS += -g
+redebug: clean all
