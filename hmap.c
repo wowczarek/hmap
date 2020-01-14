@@ -125,12 +125,11 @@ static inline uint32_t log2_32(uint32_t n) {
  */
 static inline uint32_t hindex32(const uint32_t key, const uint32_t shift, const uint32_t mask) {
 #if 0
-    return ((uint32_t)(key * FIB32_BASE) >> shift); /* basic Fibonacci index */
+    return ((uint32_t)(key * FIB32_BASE) >> shift); /* basic Fibonacci index, decent */
 #elif 1
-printf("yo\n");
-    return (uint32_t)((key ^ (key >> shift)) * FIB32_BASE) >> shift; /* Fibonacci index with XOR mixing */
+    return (uint32_t)((key ^ (key >> shift)) * FIB32_BASE) >> shift; /* Fibonacci index with XOR mixing, better */
 #elif 0
-	return key & mask; /* totally basic modulo (also why we need the mask) */
+    return key & mask; /* totally basic modulo for shit results (also why we need the mask) */
 #endif /* 0 */
 }
 
