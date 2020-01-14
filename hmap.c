@@ -544,8 +544,8 @@ Hmap* hmInitCustom(Hmap* map, const uint32_t minsize_log2, const double growLoad
     }
 
     /* keep shrink load at at least 0.5 * grow load */
-    if(map->shrinkLoad > (map->growLoad / 2.0) {
-	map->shrinkLoad = map->growLoad / 2.0);
+    if(map->shrinkLoad > (map->growLoad / 2.0)) {
+	map->shrinkLoad = map->growLoad / 2.0;
     }
 
     /* sanitise batch size */
