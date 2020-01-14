@@ -209,7 +209,7 @@ static inline HmapEntry* hsFetch(HmapSpace* space, const uint32_t key, const uin
     }
 
     /* do not stop on an unused entry because we delete without backwards shift during migration */
-    /* TODO: investigate proper delete on migration and how this will affect fetches durinf migration */
+    /* TODO: investigate proper delete on migration and how this will affect fetches during migration */
     while(offset <= offsetLimit) {
 	if(buckets[index].inuse && buckets[index].key == key) {
 	    return &buckets[index];
