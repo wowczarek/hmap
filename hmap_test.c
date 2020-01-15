@@ -44,6 +44,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <time.h>
+
 #include "hmap.h"
 
 // HMAP_MIN_LOG2SIZE 5
@@ -61,7 +62,7 @@
 /* map defaults */
 //#define INIT_MAP(map) hmInitCustom(map, 5, 0.9, 0.25, 1, 4)
 //#define INIT_MAP(map) hmInitSize(map,10000000)
-#define INIT_MAP(map) hmInit(map)
+#define INIT_MAP(map) if(itemcount > 0) hmInitSize(map, itemcount); else hmInit(map)
 
 /* constants */
 #define TESTSIZE 1000
@@ -129,10 +130,11 @@ static uint32_t* randArrayU32(const uint32_t count) {
 static void usage() {
 
     fprintf(stderr, "hmap_test (c) 2020: Wojciech Owczarek, a simple hash map implementation\n\n"
-	   "usage: hmap_test [-n NUMBER] [-r NUMBER] [-c] [-s] [-m] [-e]\n"
+	   "usage: hmap_test [-n NUMBER] [-N NUMBER] [-r NUMBER] [-c] [-s] [-m] [-e]\n"
 	   "                 [-l] [-o] [-i NUMBER]\n"
 	   "\n"
 	   "-c              Insert sequential keys rather than random\n"
+	   "-N NUMBER       Set minimum hash map size to fit N items, default 32 slots\n"
 	   "-n NUMBER       Number of keys to insert into map, default %d\n"
 	   "-r NUMBER       Number of entries to leave in the map after removal, default %d\n"
 	   "-s              Test insertion only, generate CSV output on stdout\n"
@@ -231,9 +233,9 @@ static void runBench(Hmap *map, const int benchtype, const int testsize, int tes
 		DUR_START(test);
 		for(i = j; i < j + testinterval; i++) {
 
-		    HmapResult n = hmGet(map, sarr[i]);
+		    HmapEntry *n = hmGet(map, sarr[i]);
 
-		    if(n.exists && n.entry->key == sarr[i]) {
+		    if(n != NULL && n->key == sarr[i]) {
 			found++;
 		    }
 
@@ -272,9 +274,9 @@ static void runBench(Hmap *map, const int benchtype, const int testsize, int tes
 
 		DUR_START(test);
 		for(int k = 0; k < testinterval; k++) {
-		    HmapResult n = hmGet(map, larr[k]);
+		    HmapEntry *n = hmGet(map, larr[k]);
 
-		    if(n.exists && n.entry->key == larr[k]) {
+		    if(n != NULL && n->key == larr[k]) {
 			found++;
 		    }
 		}
@@ -299,9 +301,9 @@ static void runBench(Hmap *map, const int benchtype, const int testsize, int tes
 
 		DUR_START(test);
 		for(int i = j; i < j + testinterval; i++) {
-		    HmapResult n = hmGet(map, rarr[i]);
+		    HmapEntry *n = hmGet(map, rarr[i]);
 
-		    if(n.exists && n.entry->key == rarr[i]) {
+		    if(n != NULL && n->key == rarr[i]) {
 			found++;
 		    }
 		}
@@ -331,10 +333,11 @@ int main(int argc, char **argv) {
 
     int c;
     int i;
+    int itemcount = 0;
     int testsize = TESTSIZE;
     int keepsize = 0;
     int testinterval = 0;
-    int found = 0;
+    uint32_t found = 0;
     int bench = BENCH_NONE;
     char obuf[2001];
     char *buf = obuf;
@@ -345,13 +348,19 @@ int main(int argc, char **argv) {
 
     memset(obuf, 0, sizeof(obuf));
 
-	while ((c = getopt(argc, argv, "?hn:r:csmeloi:")) != -1) {
+	while ((c = getopt(argc, argv, "?hn:r:N:csmeloi:")) != -1) {
 
 	    switch(c) {
 		case 'n':
 		    testsize = atoi(optarg);
 		    if(testsize <= 0) {
 			testsize = TESTSIZE;
+		    }
+		    break;
+		case 'N':
+		    itemcount = atoi(optarg);
+		    if(itemcount <= 0) {
+			itemcount = 0;
 		    }
 		    break;
 		case 'r':
@@ -453,9 +462,9 @@ int main(int argc, char **argv) {
     DUR_START(test);
     for(i = 0; i < testsize; i++) {
 
-	HmapResult n = hmGet(&map, sarr[i]);
+	HmapEntry *n = hmGet(&map, sarr[i]);
 
-	if(n.exists && n.entry->key == sarr[i]) {
+	if(n != NULL && n->key == sarr[i]) {
 	    found++;
 	}
 
@@ -472,9 +481,9 @@ int main(int argc, char **argv) {
     DUR_START(test);
     for(i = 0; i < testsize; i++) {
 
-	HmapResult n = hmGet(&map, i);
+	HmapEntry *n = hmGet(&map, i);
 
-	if(n.exists && n.entry->key == i) {
+	if(n != NULL && n->key == i) {
 	    found++;
 	}
 

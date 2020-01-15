@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS+=-std=c99 -Wall -I. -O3
+CFLAGS+=-std=c99 -Wall -I. -L. -O3
 LIBNAME = libhmap.a
 
 LIBDEPS = duration.h xalloc.h hmap.h
@@ -19,10 +19,10 @@ $(LIBNAME): $(LIBOBJ)
 	ar rc $@ $^
 	ranlib $@
 
-hmap_test: $(OBJ1) $(LIBNAME)
+hmap_test: $(OBJ1)
 	$(CC) -o $@ $^ $(OBJ1_DEPLIBS) $(CFLAGS)
 
-hmap_example: $(OBJ2) $(LIBNAME)
+hmap_example: $(OBJ2)
 	$(CC) -o $@ $^ $(OBJ2_DEPLIBS) $(CFLAGS)
 
 .PHONY: fast
@@ -40,17 +40,16 @@ refast: clean fast
 
 reprof: clean prof
 
-prof: CFLAGS += -pg
+prof: CFLAGS += -pg -Winline -Wpedantic
 prof: all
 
-debug: CFLAGS += -g
+debug: CFLAGS += -g -Winline -Wpedantic
 debug: all
 
-debugfast: CFLAGS += -g
+debugfast: CFLAGS += -g -Winline -Wpedantic
 debugfast: fast
 
-redebug: CFLAGS += -g
-redebug: clean all
+redebug: clean debug
 
-redebugfast: CFLAGS += -g
+redebugfast: CFLAGS += -g -Winline -Wpedantic
 redebugfast: clean fast

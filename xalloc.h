@@ -45,7 +45,7 @@
 
 #ifndef xallocfail
 #define xallocfail(comp) (fprintf(stderr, "*** xalloc: %s failure in %s (returned NULL), exiting. ***\n",\
-				comp, __func__), exit(EXIT_ALLOCERR))
+				comp, __func__), exit(EXIT_ALLOCERR), NULL)
 #endif /* xallocfail */
 
 #ifndef xmalloc

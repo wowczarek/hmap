@@ -85,10 +85,10 @@ typedef struct {
     uint8_t current;		/* current space indicator, flips 0/1 as spaces are swapped around */
 } Hmap;
 
-/* result of inserts and retrievals */
+/* Insertion result so we can indicate existing item and always return the new/existing entry */
 typedef struct {
     HmapEntry *entry;		/* pointer to bucket, NULL on fetch when key not found */
-    bool exists;		/* on insert: true = already exists and entry points to existing entry, on fetch: false if item not found */
+    bool exists;		/* on insert: true = already exists and entry points to existing entry */
 } HmapResult;
 
 /* init a hash map with custom parameters */
@@ -116,8 +116,8 @@ bool hmRemove(Hmap* map, const uint32_t key);
  */
 HmapResult hmPut(Hmap* map, const uint32_t key, const int value);
 
-/* get entry from map, result has pointer to the entry and an 'exists' bool */
-HmapResult hmGet(Hmap* map, const uint32_t key);
+/* get entry from map, NULL if not found */
+HmapEntry* hmGet(Hmap* map, const uint32_t key);
 
 /* dump the contents of a hash map to stdout, dump empty slots if empties == true */
 void hmDump(Hmap* map, const bool empties);

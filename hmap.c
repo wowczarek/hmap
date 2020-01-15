@@ -70,9 +70,9 @@
 static inline uint32_t roundPow2_32(uint32_t n);
 static inline uint32_t log2_32(uint32_t n);
 static inline uint32_t hindex32(const uint32_t key, const uint32_t shift, const uint32_t mask);
-static HmapResult hsInsert(HmapSpace* space, const uint32_t key, const int value);
+static inline HmapResult hsInsert(HmapSpace* space, const uint32_t key, const int value);
 static inline HmapEntry* hsFetch(HmapSpace* space, const uint32_t key, const uint32_t offsetLimit);
-static bool hsRemove(HmapSpace* space, const uint32_t key);
+static inline bool hsRemove(HmapSpace* space, const uint32_t key);
 static void hsInit(Hmap* map, HmapSpace* space, const uint32_t log2size);
 static void hsMigrate(Hmap* map, uint32_t batchSize);
 static void triggerResize(Hmap* map, const int dir);
@@ -92,7 +92,7 @@ static inline uint32_t roundPow2_32(uint32_t n) {
 
 }
 
-/* DeBrujin sequence for bit positions */
+/* De Brujin sequence for bit positions */
 static const int _db32[32] = {
     0, 9, 1, 10, 13, 21, 2, 29,
     11, 14, 16, 18, 22, 25, 3, 30,
@@ -134,64 +134,58 @@ static inline uint32_t hindex32(const uint32_t key, const uint32_t shift, const 
 }
 
 /* insert a key + value into a hash map space */
-static HmapResult hsInsert(HmapSpace* space, const uint32_t key, const int value) {
+static inline HmapResult hsInsert(HmapSpace* space, const uint32_t key, const int value) {
 
     HmapResult ret = { NULL, false };
     uint32_t index = hindex32(key, space->shift, space->mask);
-    bool placed = false;	/* have we found a home for the new entry yet? */
-    uint32_t myindex = index;	/* slot where we _actually_ placed our new entry! */
     HmapEntry me = { .key = key, .value = value, .offset = 0, .inuse = true };
     HmapEntry tmp;
     HmapEntry* buckets = space->buckets;
 
     if(buckets == NULL) {
-	xcalloc(space->buckets, space->size, sizeof(HmapEntry));
-	buckets = space->buckets;
+	buckets = xcalloc(space->buckets, space->size, sizeof(HmapEntry));
     }
 
     /* yes, this has the potential for an endless loop, but the init/resize logic ensures the map always grows before it is full */
     while(buckets[index].inuse) {
 
 	/* entry already exists */
-	if(buckets[index].key == me.key) {
+	if(buckets[index].key == key) {
 	    ret.exists = true;
-	    ret.entry = &buckets[index];
+	    ret.entry = buckets + index;
 	    return ret;
 	}
 
 	/* this is all there is to Robin Hood on insert */
 	if(buckets[index].offset < me.offset) {
 	    /* minus this, which is only to return the inserted bucket */
-	    if(!placed) {
-		myindex = index;
-		placed = true;
+	    if(ret.entry == NULL) {
+		ret.entry = buckets + index;
 	    }
 	    tmp = me;
 	    me = buckets[index];
 	    buckets[index] = tmp;
 	}
 
+	me.offset++;
 	index++;
 	index &= space->mask;
-	me.offset++;
 
     }
 
     /* keep the running max offset, which will limit searches */
-    if(me.offset > space->maxOffset) {
+    if(space->maxOffset < me.offset) {
 	space->maxOffset = me.offset;
     }
 
-    /* no rich buckets encountered */
-    if(!placed) {
-	myindex = index;
-    }
-
-    /* commit the new / pushed down entry to table */
+    /* commit the last/new entry to table */
     buckets[index] = me;
 
-    /* return the actual entry we placed */
-    ret.entry = &buckets[myindex];
+    /* no rich buckets encountered, new entry placed in empty slot */
+    if(ret.entry == NULL) {
+	ret.entry = buckets + index;
+    }
+
     return ret;
 
 }
@@ -212,29 +206,32 @@ static inline HmapEntry* hsFetch(HmapSpace* space, const uint32_t key, const uin
     /* TODO: investigate proper delete on migration and how this will affect fetches during migration */
     while(offset <= offsetLimit) {
 	if(buckets[index].inuse && buckets[index].key == key) {
-	    return &buckets[index];
+	    return buckets + index;
 	}
+	offset++;
 	index++;
 	index &= space->mask;
-	offset++;
     }
 
     return NULL;
 }
 
 /* remove an entry from hash map space, return false if not found */
-static bool hsRemove(HmapSpace* space, const uint32_t key) {
+static inline bool hsRemove(HmapSpace* space, const uint32_t key) {
 
-    static const HmapEntry emptyentry = { 0,0,0,0 };
+//    static const HmapEntry emptyentry = { 0,0,0,0 };
 
     uint32_t index = hindex32(key, space->shift, space->mask);
-    uint32_t previndex;
-
-    HmapEntry* buckets = space->buckets;
     uint32_t offset = 0;
+    uint32_t previndex;
+    HmapEntry* buckets = space->buckets;
+
+    if(buckets == NULL) {
+	return false;
+    }
 
     /* find the entry and empty it: note this will not work in the lazy-emptied secondary space, but it's never used on it, yet */
-    while(offset < space->offsetLimit && buckets[index].inuse) {
+    while(buckets[index].inuse && offset < space->offsetLimit) {
 
 	/* keep the index of the previous entry (that gets emptied) */
 	previndex = index;
@@ -245,7 +242,7 @@ static bool hsRemove(HmapSpace* space, const uint32_t key) {
 
 	/* we've found our key, let's empty it */
 	if(buckets[previndex].key == key) {
-	    buckets[previndex] = emptyentry;
+	    buckets[previndex].inuse = false;// = emptyentry;
 	    goto found;
 	}
 
@@ -257,10 +254,10 @@ static bool hsRemove(HmapSpace* space, const uint32_t key) {
 found:
 
     /* keep shifting consecutive entries left until we find an empty or offset 0 (Righteous Ruler a.k.a. JAH) */
-    while(buckets[index].offset > 0 && buckets[index].inuse) {
+    while(buckets[index].inuse && buckets[index].offset > 0) {
 	buckets[previndex] = buckets[index];
 	buckets[previndex].offset--;
-	buckets[index] = emptyentry;
+	buckets[index].inuse = false;
 	previndex = index;
 	index++;
 	index &= space->mask;
@@ -392,22 +389,13 @@ static void triggerResize(Hmap* map, const int dir) {
 }
 
 /* get entry from map: result has pointer to the entry and an 'exists' bool */
-HmapResult hmGet(Hmap* map, const uint32_t key) {
+HmapEntry* hmGet(Hmap* map, const uint32_t key) {
 
-    HmapResult ret = { NULL, true };
-
-    /* TODO: investigate fetch from secondary space first if migrated less than half */
-
-    /* fetch from primary space */
-    ret.entry = hsFetch(&map->spaces[map->current], key, map->spaces[map->current].maxOffset);
+    HmapEntry* ret = hsFetch(&map->spaces[map->current], key, map->spaces[map->current].maxOffset);
 
     /* not found and stil migrating: see if it's in the secondary space */
-    if(ret.entry == NULL && map->toMigrate) {
-	ret.entry = hsFetch(&map->spaces[!map->current], key, map->spaces[!map->current].maxOffset);
-    }
-
-    if(ret.entry == NULL) {
-	ret.exists = false;
+    if(ret == NULL && map->toMigrate) {
+	return hsFetch(&map->spaces[!map->current], key, map->spaces[!map->current].maxOffset);
     }
 
     return ret;
@@ -452,7 +440,7 @@ HmapResult hmPut(Hmap* map, const uint32_t key, const int value) {
     map->count++;
 
     /* if we have hit a / the limit, start growing, but not when already migrating */
-    if((map->toMigrate == 0) && (current->maxOffset == current->offsetLimit || map->count >= map->growCount)) {
+    if((map->toMigrate == 0) && (map->count >= map->growCount || current->maxOffset >= current->offsetLimit)) {
 	triggerResize(map, HMAP_GROW);
     }
 
@@ -614,7 +602,7 @@ void hmDump(Hmap* map, const bool empties) {
 
     for(int i = 0; i < current->size; i++) {
 	if(bucket->inuse || empties) {
-	    printf("pri, #%06d, %s, 0x%08x (%010d), %06d, %06d\n", i, bucket->inuse ? "full " : "empty", bucket->key, bucket->key, bucket->value, bucket->offset);
+	    printf("pri, #%06d, %s, 0x%08x (%010d), %06d, %06d\n", i, bucket->inuse ? "used " : "empty", bucket->key, bucket->key, bucket->value, bucket->offset);
 	}
 	bucket++;
     }
@@ -630,7 +618,7 @@ other:
 
     for(int i = 0; i < other->size; i++) {
 	if(bucket->inuse || empties) {
-	    printf("sec, #%06d, %s, 0x%08x (%010d), %06d, %06d\n", i, bucket->inuse ? "full " : "empty", bucket->key, bucket->key, bucket->value, bucket->offset);
+	    printf("sec, #%06d, %s, 0x%08x (%010d), %06d, %06d\n", i, bucket->inuse ? "used " : "empty", bucket->key, bucket->key, bucket->value, bucket->offset);
 	}
 	bucket++;
     }
