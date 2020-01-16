@@ -76,7 +76,7 @@ typedef struct {
     uint32_t growCount;		/* item count at which we grow the map, based on [current space size] * growLoad */
     uint32_t shrinkCount;	/* item count at which we shrink the map, based on [current space size] * shrinkLoad */
     uint32_t toMigrate;		/* how many slots (not items) we still have to migrate */
-    uint32_t migratePos;	/* current position in migrating the previous space */
+    HmapEntry* migratePos;	/* current position in migrating the previous space */
     uint32_t offsetMult;	/* maximum offset multiplier where we grow (n * space->log2size) */
     uint32_t batchSize;		/* migrate n slots per insert/delete */
     int migrateDir;		/* direction of migration (TODO: experiment with realloc, then migrate left-right on grow, right-left on shrink) */

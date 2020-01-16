@@ -302,22 +302,22 @@ static void hsMigrate(Hmap* map, const uint32_t batchSize) {
 
     uint32_t migrated = 0;
     uint32_t left = map->toMigrate;
-    uint32_t pos = map->migratePos;
+    HmapEntry *entry = map->migratePos;
 
     HmapSpace* current = &map->spaces[map->current];
     HmapSpace* other = &map->spaces[!map->current];
 
     /* keep migrating until nothing left or we've done our batch */
     /* TODO: investigate limiting migration to (occupied) item count, not slot count, may shave off some time */
+    /* ^^^^ result: shorter migration time, but much longer insert / delete times during migration */
     while((left > 0) && (migrated < batchSize)) {
-	HmapEntry *entry = &other->buckets[pos];
 	if(entry->inuse) {
 	    /* properly insert the entry into current (new) space */
 	    hsInsert(current, entry->key, entry->value);
 	    /* lazy-delete the entry in old space */
 	    entry->inuse = false;
 	}
-	pos++;
+	entry++;
 	migrated++;
 	left--;
     }
@@ -326,13 +326,13 @@ static void hsMigrate(Hmap* map, const uint32_t batchSize) {
     if(left == 0) {
 	map->migrateDir = 0;
 	map->toMigrate = 0;
-	map->migratePos = 0;
+	map->migratePos = NULL;
 	free(other->buckets);
 	other->buckets = NULL;
     /* otherwise only update migration state */
     } else {
 	map->toMigrate = left;
-	map->migratePos = pos;
+	map->migratePos = entry;
     }
 
 }
@@ -351,7 +351,7 @@ static void triggerResize(Hmap* map, const int dir) {
 #endif
 	map->migrateDir = dir;
 	map->toMigrate = space->size;
-	map->migratePos = 0;
+	map->migratePos = space->buckets;
     /* special case: empty map, we free up all space */
     } else {
 
@@ -453,13 +453,14 @@ bool hmRemove(Hmap* map, const uint32_t key) {
 
     HmapSpace* current = &map->spaces[map->current];
     HmapSpace* other = &map->spaces[!map->current];
+    HmapEntry *entry;
 
     /* we have some entries to migrate */
     if(map->toMigrate) {
 
 	/* try removing from previous space first */
-	/* TODO: this is inconsistent, we should lazy-remove the existing item since this is what we do on migration */
-	if(hsRemove(other,key)) {
+	if((entry = hsFetch(other, key, other->maxOffset)) != NULL) {
+	    entry->inuse = false;
 	    map->count--;
 	    /* continue with migration */
 	    hsMigrate(map, map->batchSize);
