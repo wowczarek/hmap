@@ -136,6 +136,7 @@ static inline uint32_t hindex32(const uint32_t key, const uint32_t shift, const 
 /* insert a key + value into a hash map space */
 static inline HmapResult hsInsert(HmapSpace* space, const uint32_t key, const int value) {
 
+    uint32_t maxOffset = space->maxOffset;
     HmapResult ret = { NULL, false };
     uint32_t index = hindex32(key, space->shift, space->mask);
     HmapEntry me = { .key = key, .value = value, .offset = 0, .inuse = true };
@@ -162,6 +163,8 @@ static inline HmapResult hsInsert(HmapSpace* space, const uint32_t key, const in
 	    if(ret.entry == NULL) {
 		ret.entry = buckets + index;
 	    }
+	    /* record potential max offset of anything we drop */
+	    maxOffset = max(maxOffset, me.offset);
 	    tmp = me;
 	    me = buckets[index];
 	    buckets[index] = tmp;
@@ -173,10 +176,8 @@ static inline HmapResult hsInsert(HmapSpace* space, const uint32_t key, const in
 
     }
 
-    /* keep the running max offset, which will limit searches */
-    if(space->maxOffset < me.offset) {
-	space->maxOffset = me.offset;
-    }
+    /* update max offset for the entry we drop at the end, this will limit probe length */
+    space->maxOffset = max(maxOffset, me.offset);
 
     /* commit the last/new entry to table */
     buckets[index] = me;
@@ -218,8 +219,6 @@ static inline HmapEntry* hsFetch(HmapSpace* space, const uint32_t key, const uin
 
 /* remove an entry from hash map space, return false if not found */
 static inline bool hsRemove(HmapSpace* space, const uint32_t key) {
-
-//    static const HmapEntry emptyentry = { 0,0,0,0 };
 
     uint32_t index = hindex32(key, space->shift, space->mask);
     uint32_t offset = 0;

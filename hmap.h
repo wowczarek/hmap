@@ -45,6 +45,15 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* min, max, everybody needs min/max */
+#ifndef min
+#define min(a,b) ((a < b) ? (a) : (b))
+#endif
+
+#ifndef max
+#define max(a,b) ((a > b) ? (a) : (b))
+#endif
+
 /* convenience constants */
 #define HMAP_MIGRATE_ALL 0	/* when set as batchSize on init, map migrates / rehashes everything on shring/grow */
 #define HMAP_NONE 0		/* universal zero constant */
