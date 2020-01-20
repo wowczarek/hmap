@@ -552,6 +552,7 @@ int main(int argc, char **argv) {
 	fprintf(stderr, "done.\n");
 	buf += sprintf(buf, "| Removal, count %-10d       "   "| %-11llu "  "| ns/key  |\n", testsize - keepsize, (testsize <= keepsize) ? 0 : test_delta / (testsize - keepsize));
 	buf += sprintf(buf, "| Removal, rate                   | %-11.0f "  "| nodes/s |\n", (1000000000.0 / test_delta) * testsize );
+
     } else if(keepsize < testsize) {
 
 	fprintf(stderr, "Removing %d keys in %s order to leave %d keys... ", testsize - keepsize, sequential ? "sequential" : "random", keepsize);
@@ -575,10 +576,8 @@ int main(int argc, char **argv) {
     fprintf(stdout, "\nTest results:\n\n%s\n", obuf);
     fflush(stderr);
 
-    if(map.count > 0) {
-	fprintf(stdout, "Final map contents:\n");
-	hmDump(&map, false);
-    }
+    fprintf(stdout, "Final map and contents:\n\n");
+    hmDump(&map, false);
 
 cleanup:
     fprintf(stderr, "Cleaning up... ");

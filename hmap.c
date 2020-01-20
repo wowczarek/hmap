@@ -92,7 +92,7 @@ static inline uint32_t roundPow2_32(uint32_t n) {
 
 }
 
-/* De Brujin sequence for bit positions */
+/* De Bruijn sequence for bit positions */
 static const int _db32[32] = {
     0, 9, 1, 10, 13, 21, 2, 29,
     11, 14, 16, 18, 22, 25, 3, 30,
@@ -125,11 +125,11 @@ static inline uint32_t log2_32(uint32_t n) {
  */
 static inline uint32_t hindex32(const uint32_t key, const uint32_t shift, const uint32_t mask) {
 #if 0
-    return ((uint32_t)(key * FIB32_BASE) >> shift); /* basic Fibonacci index, decent */
+    return ((uint32_t)(key * FIB32_BASE) >> shift);			/* basic Fibonacci index, decent dispersion, slower*/
 #elif 1
-    return (uint32_t)((key ^ (key >> shift)) * FIB32_BASE) >> shift; /* Fibonacci index with XOR mixing, better */
+    return (uint32_t)((key ^ (key >> shift)) * FIB32_BASE) >> shift;	/* Fibonacci index with XOR mixing, best dispersion, slowest */
 #elif 0
-    return key & mask; /* totally basic modulo for shit results (also why we need the mask) */
+    return key & mask; /* totally basic modulo for shit results (also why we need the mask) - fastest, poorest dispersion */
 #endif /* 0 */
 }
 
@@ -159,15 +159,19 @@ static inline HmapResult hsInsert(HmapSpace* space, const uint32_t key, const in
 
 	/* this is all there is to Robin Hood on insert */
 	if(buckets[index].offset < me.offset) {
-	    /* minus this, which is only to return the inserted bucket */
+
+	    /* this is only to return the inserted bucket */
 	    if(ret.entry == NULL) {
 		ret.entry = buckets + index;
 	    }
-	    /* record potential max offset of anything we drop */
+	    /* this is to record the record the potential max offset of anything we drop */
 	    maxOffset = max(maxOffset, me.offset);
+
+	    /* swap with the richer entry */
 	    tmp = me;
 	    me = buckets[index];
 	    buckets[index] = tmp;
+
 	}
 
 	me.offset++;
@@ -241,7 +245,7 @@ static inline bool hsRemove(HmapSpace* space, const uint32_t key) {
 
 	/* we've found our key, let's empty it */
 	if(buckets[previndex].key == key) {
-	    buckets[previndex].inuse = false;// = emptyentry;
+	    buckets[previndex].inuse = false;
 	    goto found;
 	}
 
